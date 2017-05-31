@@ -1,0 +1,109 @@
+SAMPLES, = glob_wildcards("{sample}.ab1")
+
+#rule preall:
+#    input:
+#        expand("fq/{sample}.fq", sample=SAMPLES)
+
+rule convert:
+    input:
+	"{sample}.ab1"
+    output:
+        "fq/{sample}.fq"
+    run:
+        #"python ./convert.py"
+        from io import StringIO #python 3
+        from Bio import SeqIO
+        #from StringIO import StringIO  #python 2
+        import sys
+        import traceback #Dv
+        import os
+        handle = StringIO("")
+        ls = os.listdir(".")
+        for file in ls:
+        	ext = os.path.splitext(file)[1]
+		rt = os.path.splitext(file)[0]
+		if ext == ".ab1":
+        		out='fq/'+rt+".fq"
+        		SeqIO.convert(file, "abi", out, "fastq")
+
+#rule pseudo1:
+#    input:
+#        expand("fq/{sample}.fq", sample=SAMPLES)
+
+rule combine:
+    input:
+        expand("fq/{sample}.fq", sample=SAMPLES)
+    output:
+        "fq/all.fq"
+    shell:"""
+	#echo 'ok' > {output}
+        for name in {input}
+        do
+        header=`basename $name|sed 's/.fq//'`
+	echo '>'$header >> {output}
+        awk '{{if (NR%4 != 1) print }}' $name >> {output}
+        done
+        """
+
+rule reverse_complemeted:
+    input:
+        "fq/all.fq"
+    output:
+        "fq/all_rc.fq"
+    shell:"""
+         COUNT=0 && while read -r line; do COUNT=$(( $COUNT + 1 ))
+         if (( $COUNT % 4 == 1 )); then
+         echo $line >> {output}
+         elif (( $COUNT % 4 == 2 )); then
+         echo $line| rev | tr "ATGCatgc" "TACGtacg" >> {output}
+         elif (( $COUNT % 4 == 3 )); then 
+         echo $line >> {output}
+         elif (( $COUNT % 4 == 0 )); then 
+         echo $line|rev >> {output}
+         fi
+         done < {input}		
+         """ 
+
+rule fq2fa:
+    input:
+        "fq/all_rc.fq"
+    output:
+        "fq/fa/all_rc.fa"
+    shell:"""
+         awk '{{if (NR%4==1||NR%4==2) print}}' {input} > {output}
+         """
+
+rule bowtie_build:
+    input:
+        "fq/fa/all_rc.fa"
+    output:
+        expand("fq/fa/all_rc.{index}.ebwt", index=range(1,4)),
+        expand("fq/fa/all_rc.rev.{index}.ebwt", index=range(1,2))
+    params:
+        "fq/fa/all_rc"
+    shell:"""
+         bowtie-build -f {input} {params}
+         """
+
+rule bowtie_map:
+    input:
+         expand("fq/fa/all_rc.{index}.ebwt", index=range(1,4)),
+         expand("fq/fa/all_rc.rev.{index}.ebwt", index=range(1,2))
+    output:
+         "fq/fa/mapped/aln.bam"
+    params:
+         "/cclab_nas/rawdata/DGCR8_DROSHA_RNASeq/CRISPR/Yusa_gRNA.fa"
+    shell:"""
+         (bowtie -S -v 0 -p 2 -f --best --strata -a -y fq/fa/all_rc {params}| samtools view -bS -F4 -o {output} - ) 2> fq/fa/mapped/aln_rc.err
+         """
+
+rule view:
+    input:
+         "fq/fa/mapped/aln.bam"
+    output:
+         "fq/fa/mapped/aln.txt"
+    shell:"""
+         samtools view {input} > {output}
+         echo "Top 5:"
+         samtools view {input} |cut -f1|cut -d"-" -f4|sort|uniq -c|sort -k1nr|head -5
+         """
